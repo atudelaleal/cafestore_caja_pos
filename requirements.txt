@@ -1,0 +1,6 @@
+streamlit==1.41.1
+gspread==6.2.1
+google-auth==2.55.2
+pandas==2.3.3
+pytz==2026.2
+requests
