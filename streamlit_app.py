@@ -144,7 +144,7 @@ def append_ventas(ventas_ws, rows):
     coloca cada valor bajo su columna, dejando en blanco las que no vengan (ej. Estado_Sync).
     Crea las columnas que la vista de venta escribe si aún no existen (expandiendo la grilla si hace
     falta, ver ensure_columns). Robusto ante columnas agregadas por el admin."""
-    header = ensure_columns(ventas_ws, ["Dispositivo", "Factura", "Email_Factura"])
+    header = ensure_columns(ventas_ws, ["Dispositivo", "Factura", "Email_Factura", "Descuento"])
     matrix = [[r.get(col, "") for col in header] for r in rows]
     ventas_ws.append_rows(matrix, value_input_option="USER_ENTERED")
 
@@ -698,45 +698,95 @@ col_cart, col_catalog = st.columns([1, 2])
 
 # ---------------- CARRITO (izquierda) ----------------
 with col_cart:
-    head_cart_l, head_cart_r = st.columns([1.4, 1.6])
-    head_cart_l.subheader("🛒 Carrito")
-    head_cart_r.caption(f"🏷️ {caja_id or '⚠️ sin identificar — ver barra lateral'}")
+    # CSS del resumen compacto: total prominente + ítems chico en la misma banda; opciones/detalle van
+    # en expanders colapsados para NO empujar el catálogo al agregar productos (pedido en móvil).
+    st.markdown(
+        "<style>"
+        ".cart-sum{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:2px 2px 0}"
+        ".cart-sum .cs-items{font-size:.9rem;color:#8b8b8b;white-space:nowrap}"
+        ".cart-sum .cs-total{font-size:1.9rem;font-weight:800;line-height:1.05}"
+        ".cart-desc{font-size:.78rem;color:#d98a2b;margin:0 0 2px;text-align:right}"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+    st.caption(f"🏷️ {caja_id}" if caja_id else "🏷️ ⚠️ sin identificar — ver barra lateral")
 
     if not st.session_state.carrito:
-        st.info("El carrito está vacío. Toca un producto del catálogo para agregarlo.")
+        st.info("Carrito vacío. Toca un producto del catálogo para agregarlo.")
     else:
-        # Total y botón de envío van PRIMERO (antes de la lista de ítems) para que nunca
-        # queden fuera de pantalla en un carrito largo — la lista scrollea aparte, abajo.
-        total = sum(item["subtotal"] for item in st.session_state.carrito)
-        st.metric("TOTAL A PAGAR", money(total))
+        carrito = st.session_state.carrito
+        total_bruto = sum(item["subtotal"] for item in carrito)
+        n_units = sum(item["cantidad"] for item in carrito)
 
-        es_merma = st.checkbox(
-            "📉 Es merma (no es venta — igual descuenta stock)",
-            key="es_merma_venta",
-            help="Úsalo para productos rotos, derramados o perdidos. Se descuenta del stock igual que una venta, pero no cuenta como ingreso.",
+        # --- Opciones secundarias (merma / factura / descuento) en expander colapsado ---
+        # Se abre solo si ya hay alguna opción activa, para no colapsarse mientras la configuras.
+        opts_activas = (
+            st.session_state.get("es_merma_venta", False)
+            or st.session_state.get("factura_venta", False)
+            or st.session_state.get("desc_tipo_venta", "Sin descuento") != "Sin descuento"
         )
-        # Factura: solo se pide el correo, para que la venta en el mostrador siga siendo fluida.
-        # No se pide RUT/razón social acá a propósito — Álvaro contacta después por correo, pide los
-        # datos y emite la factura a mano en Odoo (estas ventas NO se sincronizan, ver _is_factura).
+        es_merma = False
         quiere_factura = False
         email_factura = ""
-        if not es_merma:
-            quiere_factura = st.checkbox(
-                "🧾 Requiere factura",
-                key="factura_venta",
-                help="Se registra el correo para contactar al cliente después. La venta entra a Odoo "
-                     "como borrador (sin confirmar) — la factura se emite a mano al cliente real.",
+        desc_tipo = "Sin descuento"
+        desc_val = 0
+        with st.expander("⚙️ Opciones · merma · factura · descuento", expanded=opts_activas):
+            es_merma = st.checkbox(
+                "📉 Es merma (no es venta — igual descuenta stock)",
+                key="es_merma_venta",
+                help="Para productos rotos, derramados o perdidos. Descuenta stock igual que una venta, pero no cuenta como ingreso.",
             )
-            if quiere_factura:
-                email_factura = st.text_input(
-                    "Correo del cliente (para la factura)",
-                    key="email_factura_venta",
-                    placeholder="cliente@empresa.cl",
+            if not es_merma:
+                quiere_factura = st.checkbox(
+                    "🧾 Requiere factura",
+                    key="factura_venta",
+                    help="Registra el correo para contactar al cliente después. Entra a Odoo como borrador; la factura se emite a mano.",
                 )
+                if quiere_factura:
+                    email_factura = st.text_input(
+                        "Correo del cliente (para la factura)",
+                        key="email_factura_venta", placeholder="cliente@empresa.cl",
+                    )
+                desc_tipo = st.radio(
+                    "Descuento en esta venta",
+                    ["Sin descuento", "Porcentaje (%)", "Monto ($)"],
+                    horizontal=True, key="desc_tipo_venta",
+                )
+                if desc_tipo == "Porcentaje (%)":
+                    desc_val = st.number_input("% de descuento", min_value=0.0, max_value=100.0,
+                                               value=0.0, step=1.0, key="desc_pct_venta")
+                elif desc_tipo == "Monto ($)":
+                    desc_val = st.number_input("Monto a descontar ($)", min_value=0,
+                                               value=0, step=500, key="desc_monto_venta")
+
+        # --- descuento calculado (aplica a la venta completa) ---
+        descuento_monto = 0
+        desc_label = ""
+        if not es_merma and desc_val:
+            if desc_tipo == "Porcentaje (%)":
+                descuento_monto = int(round(total_bruto * float(desc_val) / 100))
+                desc_label = f"{float(desc_val):g}%"
+            elif desc_tipo == "Monto ($)":
+                descuento_monto = int(desc_val)
+                desc_label = money(int(desc_val))
+        descuento_monto = max(0, min(descuento_monto, total_bruto))
+        total_final = total_bruto - descuento_monto
+
+        # --- resumen compacto SIEMPRE visible: ítems + total (se actualiza con cada producto) ---
+        st.markdown(
+            f"<div class='cart-sum'><span class='cs-items'>🛒 {int(n_units)} ítem(s)</span>"
+            f"<span class='cs-total'>{money(total_final)}</span></div>",
+            unsafe_allow_html=True,
+        )
+        if descuento_monto > 0:
+            st.markdown(
+                f"<div class='cart-desc'>antes {money(total_bruto)} · −{money(descuento_monto)} ({desc_label})</div>",
+                unsafe_allow_html=True,
+            )
 
         if es_merma:
             metodo_pago = "Merma"
-            st.caption("Se registrará sin método de pago, marcada como merma.")
+            st.caption("Se registrará como merma, sin método de pago.")
         else:
             metodo_pago = st.selectbox("Método de pago", METODOS_PAGO, key="metodo_pago_venta")
 
@@ -747,7 +797,7 @@ with col_cart:
             stock_fresco, ventas_fresco, ventas_ws = fetch_data()
             stock_fresco_idx = stock_fresco.set_index("SKU")
             problemas = []
-            for item in st.session_state.carrito:
+            for item in carrito:
                 restante = (
                     stock_fresco_idx.loc[item["sku"], "Stock restante"]
                     if item["sku"] in stock_fresco_idx.index else 0
@@ -759,7 +809,6 @@ with col_cart:
             st.session_state.ventas_df = ventas_fresco
             st.session_state.ventas_ws = ventas_ws
 
-            # Sin correo, una venta marcada como factura es inútil después (no hay a quién contactar).
             if quiere_factura and not email_factura.strip():
                 problemas.append("**Falta el correo del cliente** — sin él no se puede emitir la factura después.")
 
@@ -768,28 +817,42 @@ with col_cart:
             else:
                 venta_id = datetime.now(CHILE_TZ).strftime("%Y%m%d%H%M%S")
                 timestamp = datetime.now(CHILE_TZ).strftime("%Y-%m-%d %H:%M:%S")
-                filas = [
-                    {"Timestamp": timestamp, "SKU": item["sku"], "Producto": item["producto"],
-                     "Cantidad": item["cantidad"], "Metodo_Pago": metodo_pago, "Subtotal": item["subtotal"],
-                     "Venta_ID": venta_id, "Merma": es_merma, "Dispositivo": caja_id,
-                     "Factura": quiere_factura, "Email_Factura": email_factura.strip()}
-                    for item in st.session_state.carrito
-                ]
+                # El descuento de la venta se reparte proporcionalmente entre las líneas y se guarda el
+                # Subtotal YA NETO. Como el sync a Odoo usa price_unit = Subtotal/Cantidad, Odoo recibe
+                # el monto descontado, no el original. La última línea absorbe el redondeo (CLP entero).
+                aplicar_desc = descuento_monto > 0 and total_bruto > 0 and not es_merma
+                filas = []
+                acc = 0
+                n = len(carrito)
+                for idx, item in enumerate(carrito):
+                    if aplicar_desc:
+                        d_i = (descuento_monto - acc) if idx == n - 1 else int(round(descuento_monto * item["subtotal"] / total_bruto))
+                        acc += d_i
+                        sub_net = max(0, item["subtotal"] - d_i)
+                    else:
+                        sub_net = item["subtotal"]
+                    filas.append({
+                        "Timestamp": timestamp, "SKU": item["sku"], "Producto": item["producto"],
+                        "Cantidad": item["cantidad"], "Metodo_Pago": metodo_pago, "Subtotal": sub_net,
+                        "Venta_ID": venta_id, "Merma": es_merma, "Dispositivo": caja_id,
+                        "Factura": quiere_factura, "Email_Factura": email_factura.strip(),
+                        "Descuento": desc_label if aplicar_desc else "",
+                    })
                 append_ventas(ventas_ws, filas)
                 if es_merma:
-                    st.success(f"📉 Merma registrada — {money(total)} en valor de referencia")
+                    st.success(f"📉 Merma registrada — {money(total_bruto)} en valor de referencia")
                 elif quiere_factura:
-                    st.success(f"🧾 Venta con factura registrada — Total {money(total)} · "
-                               f"queda pendiente de emitir a {email_factura.strip()}")
+                    st.success(f"🧾 Venta con factura registrada — Total {money(total_final)} · pendiente de emitir a {email_factura.strip()}")
                 else:
-                    st.success(f"✅ Venta registrada — Total {money(total)}")
+                    extra = f" (desc. {desc_label})" if aplicar_desc else ""
+                    st.success(f"✅ Venta registrada — Total {money(total_final)}{extra}")
                 st.session_state.carrito = []
                 refrescar()
                 st.rerun()
 
-        st.divider()
-        with st.container(height=260, key="carrito_items"):
-            for i, item in enumerate(st.session_state.carrito):
+        # --- Detalle del carrito: colapsado por defecto para no empujar el catálogo ---
+        with st.expander(f"📋 Ver detalle del carrito ({len(carrito)} línea/s)"):
+            for i, item in enumerate(carrito):
                 c1, c2, c3 = st.columns([3, 1.3, 0.6])
                 c1.write(f"**{item['producto']}**")
                 c2.write(f"x{item['cantidad']} · {money(item['subtotal'])}")
