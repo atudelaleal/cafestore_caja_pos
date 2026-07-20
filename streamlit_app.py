@@ -703,9 +703,15 @@ with col_cart:
     st.markdown(
         "<style>"
         ".cart-sum{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:2px 2px 0}"
-        ".cart-sum .cs-items{font-size:.9rem;color:#8b8b8b;white-space:nowrap}"
+        ".cart-sum .cs-items{font-size:.85rem;color:#8b8b8b;white-space:nowrap}"
         ".cart-sum .cs-total{font-size:1.9rem;font-weight:800;line-height:1.05}"
         ".cart-desc{font-size:.78rem;color:#d98a2b;margin:0 0 2px;text-align:right}"
+        ".st-key-opts_row div[data-testid=stHorizontalBlock]{flex-wrap:nowrap!important;gap:.5rem}"
+        ".st-key-opts_row div[data-testid=stHorizontalBlock]>div{flex:1 1 0!important;min-width:0!important}"
+        ".st-key-cart_detail_rows div[data-testid=stHorizontalBlock]{flex-wrap:nowrap!important;gap:.2rem;align-items:center}"
+        ".st-key-cart_detail_rows div[data-testid=stHorizontalBlock]>div:first-child{flex:1 1 auto!important;min-width:0!important}"
+        ".st-key-cart_detail_rows div[data-testid=stHorizontalBlock]>div:not(:first-child){flex:0 0 2.4rem!important;min-width:0!important}"
+        ".st-key-cart_detail_rows .stButton>button{padding:.1rem 0!important;min-height:1.9rem}"
         "</style>",
         unsafe_allow_html=True,
     )
@@ -718,8 +724,7 @@ with col_cart:
         total_bruto = sum(item["subtotal"] for item in carrito)
         n_units = sum(item["cantidad"] for item in carrito)
 
-        # --- Opciones secundarias (merma / factura / descuento) en expander colapsado ---
-        # Se abre solo si ya hay alguna opción activa, para no colapsarse mientras la configuras.
+        # --- init opciones ---
         opts_activas = (
             st.session_state.get("es_merma_venta", False)
             or st.session_state.get("factura_venta", False)
@@ -730,34 +735,45 @@ with col_cart:
         email_factura = ""
         desc_tipo = "Sin descuento"
         desc_val = 0
-        with st.expander("⚙️ Opciones · merma · factura · descuento", expanded=opts_activas):
-            es_merma = st.checkbox(
-                "📉 Es merma (no es venta — igual descuenta stock)",
-                key="es_merma_venta",
-                help="Para productos rotos, derramados o perdidos. Descuenta stock igual que una venta, pero no cuenta como ingreso.",
-            )
-            if not es_merma:
-                quiere_factura = st.checkbox(
-                    "🧾 Requiere factura",
-                    key="factura_venta",
-                    help="Registra el correo para contactar al cliente después. Entra a Odoo como borrador; la factura se emite a mano.",
-                )
-                if quiere_factura:
-                    email_factura = st.text_input(
-                        "Correo del cliente (para la factura)",
-                        key="email_factura_venta", placeholder="cliente@empresa.cl",
+
+        # --- Opciones (izq) y Método de pago (der) en la MISMA fila (forzado horizontal en móvil) ---
+        with st.container(key="opts_row"):
+            col_o, col_m = st.columns([1, 1])
+            with col_o:
+                with st.expander("⚙️ Opciones", expanded=opts_activas):
+                    es_merma = st.checkbox(
+                        "📉 Merma (descuenta stock, no es venta)",
+                        key="es_merma_venta",
+                        help="Para productos rotos, derramados o perdidos. Descuenta stock igual que una venta, pero no cuenta como ingreso.",
                     )
-                desc_tipo = st.radio(
-                    "Descuento en esta venta",
-                    ["Sin descuento", "Porcentaje (%)", "Monto ($)"],
-                    horizontal=True, key="desc_tipo_venta",
-                )
-                if desc_tipo == "Porcentaje (%)":
-                    desc_val = st.number_input("% de descuento", min_value=0.0, max_value=100.0,
-                                               value=0.0, step=1.0, key="desc_pct_venta")
-                elif desc_tipo == "Monto ($)":
-                    desc_val = st.number_input("Monto a descontar ($)", min_value=0,
-                                               value=0, step=500, key="desc_monto_venta")
+                    if not es_merma:
+                        quiere_factura = st.checkbox(
+                            "🧾 Requiere factura",
+                            key="factura_venta",
+                            help="Registra el correo para contactar al cliente después. Entra a Odoo como borrador; la factura se emite a mano.",
+                        )
+                        if quiere_factura:
+                            email_factura = st.text_input(
+                                "Correo del cliente (factura)",
+                                key="email_factura_venta", placeholder="cliente@empresa.cl",
+                            )
+                        desc_tipo = st.radio(
+                            "Descuento",
+                            ["Sin descuento", "Porcentaje (%)", "Monto ($)"],
+                            key="desc_tipo_venta",
+                        )
+                        if desc_tipo == "Porcentaje (%)":
+                            desc_val = st.number_input("% de descuento", min_value=0.0, max_value=100.0,
+                                                       value=0.0, step=1.0, key="desc_pct_venta")
+                        elif desc_tipo == "Monto ($)":
+                            desc_val = st.number_input("Monto a descontar ($)", min_value=0,
+                                                       value=0, step=500, key="desc_monto_venta")
+            with col_m:
+                if es_merma:
+                    metodo_pago = "Merma"
+                    st.caption("Merma — sin método de pago.")
+                else:
+                    metodo_pago = st.selectbox("Método de pago", METODOS_PAGO, key="metodo_pago_venta")
 
         # --- descuento calculado (aplica a la venta completa) ---
         descuento_monto = 0
@@ -772,9 +788,10 @@ with col_cart:
         descuento_monto = max(0, min(descuento_monto, total_bruto))
         total_final = total_bruto - descuento_monto
 
-        # --- resumen compacto SIEMPRE visible: ítems + total (se actualiza con cada producto) ---
+        # --- resumen compacto SIEMPRE visible: líneas / productos + total ---
+        n_lines = len(carrito)
         st.markdown(
-            f"<div class='cart-sum'><span class='cs-items'>🛒 {int(n_units)} ítem(s)</span>"
+            f"<div class='cart-sum'><span class='cs-items'>🛒 {n_lines} líneas / {int(n_units)} productos</span>"
             f"<span class='cs-total'>{money(total_final)}</span></div>",
             unsafe_allow_html=True,
         )
@@ -783,12 +800,6 @@ with col_cart:
                 f"<div class='cart-desc'>antes {money(total_bruto)} · −{money(descuento_monto)} ({desc_label})</div>",
                 unsafe_allow_html=True,
             )
-
-        if es_merma:
-            metodo_pago = "Merma"
-            st.caption("Se registrará como merma, sin método de pago.")
-        else:
-            metodo_pago = st.selectbox("Método de pago", METODOS_PAGO, key="metodo_pago_venta")
 
         label_boton = "📉 Registrar merma" if es_merma else "✅ Enviar venta"
         if st.button(label_boton, type="primary", use_container_width=True):
@@ -850,15 +861,35 @@ with col_cart:
                 refrescar()
                 st.rerun()
 
-        # --- Detalle del carrito: colapsado por defecto para no empujar el catálogo ---
-        with st.expander(f"📋 Ver detalle del carrito ({len(carrito)} línea/s)"):
-            for i, item in enumerate(carrito):
-                c1, c2, c3 = st.columns([3, 1.3, 0.6])
-                c1.write(f"**{item['producto']}**")
-                c2.write(f"x{item['cantidad']} · {money(item['subtotal'])}")
-                if c3.button("🗑️", key=f"del_{i}"):
-                    st.session_state.carrito.pop(i)
-                    st.rerun()
+        # --- Detalle del carrito: gestión inline (➕ ➖ 🗑️) compacta, colapsada por defecto ---
+        with st.expander(f"📋 Ver / editar carrito ({n_lines} líneas · {int(n_units)} prod.)"):
+            with st.container(key="cart_detail_rows"):
+                stock_idx = st.session_state.stock_df.set_index("SKU")
+                for i, item in enumerate(carrito):
+                    c_n, c_p, c_m, c_d = st.columns([5, 1, 1, 1])
+                    c_n.markdown(
+                        f"**{item['producto']}**<br>"
+                        f"<span style='color:#8b8b8b;font-size:.82rem'>x{item['cantidad']} · {money(item['subtotal'])}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    if c_p.button("➕", key=f"plus_{i}", help="Agregar uno"):
+                        rest = stock_idx.loc[item["sku"], "Stock restante"] if item["sku"] in stock_idx.index else 0
+                        if item["cantidad"] + 1 > rest:
+                            st.toast(f"Solo quedan {int(rest)} de {item['producto']}")
+                        else:
+                            item["cantidad"] += 1
+                            item["subtotal"] = item["cantidad"] * item["precio"]
+                            st.rerun()
+                    if c_m.button("➖", key=f"minus_{i}", help="Quitar uno"):
+                        item["cantidad"] -= 1
+                        if item["cantidad"] <= 0:
+                            st.session_state.carrito.pop(i)
+                        else:
+                            item["subtotal"] = item["cantidad"] * item["precio"]
+                        st.rerun()
+                    if c_d.button("🗑️", key=f"del_{i}", help="Eliminar del carrito"):
+                        st.session_state.carrito.pop(i)
+                        st.rerun()
 
 # ---------------- CATÁLOGO (derecha) ----------------
 with col_catalog:
