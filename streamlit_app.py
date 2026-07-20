@@ -712,6 +712,8 @@ with col_cart:
         ".st-key-cart_detail_rows div[data-testid=stHorizontalBlock]>div:first-child{flex:1 1 auto!important;min-width:0!important}"
         ".st-key-cart_detail_rows div[data-testid=stHorizontalBlock]>div:not(:first-child){flex:0 0 2.4rem!important;min-width:0!important}"
         ".st-key-cart_detail_rows .stButton>button{padding:.1rem 0!important;min-height:1.9rem}"
+        ".st-key-search_row div[data-testid=stHorizontalBlock]{flex-wrap:nowrap!important;gap:.4rem;align-items:center}"
+        ".st-key-search_row div[data-testid=stHorizontalBlock]>div{min-width:0!important}"
         "</style>",
         unsafe_allow_html=True,
     )
@@ -893,13 +895,18 @@ with col_cart:
 
 # ---------------- CATÁLOGO (derecha) ----------------
 with col_catalog:
-    head_cat_l, head_cat_r = st.columns([2, 1.3])
-    head_cat_l.subheader("Catálogo")
-    with head_cat_r:
-        if st.button("🔄 Actualizar", use_container_width=True):
-            refrescar()
-            st.rerun()
-    busqueda = st.text_input("🔎 Buscar producto...", key="busqueda_catalogo")
+    st.subheader("Catálogo")
+    # Buscador (70%) y Actualizar (30%) en la misma fila, forzados horizontales en móvil.
+    with st.container(key="search_row"):
+        c_search, c_refresh = st.columns([7, 3])
+        busqueda = c_search.text_input(
+            "Buscar producto", key="busqueda_catalogo",
+            placeholder="🔎 Buscar producto...", label_visibility="collapsed",
+        )
+        with c_refresh:
+            if st.button("🔄 Actualizar", use_container_width=True):
+                refrescar()
+                st.rerun()
 
     en_carrito = {}
     for item in st.session_state.carrito:
