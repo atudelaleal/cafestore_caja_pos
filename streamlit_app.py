@@ -13,7 +13,29 @@ from urllib3.util.retry import Retry
 import pandas as pd
 from datetime import datetime
 import pytz
+import re
 import xmlrpc.client
+
+
+def es_movil():
+    """True si el cliente es un celular. Se usa para adaptar el layout: en móvil el carrito va
+    colapsado (no empuja el catálogo); en PC va visible.
+    1) Override manual por URL: ?vista=pc (fuerza PC) / ?vista=movil (fuerza móvil).
+    2) Si no, detecta por User-Agent (st.context.headers, Streamlit >= 1.37).
+    Best-effort: sin UA ni override, asume PC (carrito visible)."""
+    try:
+        v = str(st.query_params.get("vista", "")).strip().lower()
+    except Exception:
+        v = ""
+    if v in ("pc", "escritorio", "desktop"):
+        return False
+    if v in ("movil", "móvil", "mobile", "celular"):
+        return True
+    try:
+        ua = st.context.headers.get("User-Agent", "") or ""
+    except Exception:
+        ua = ""
+    return bool(re.search(r"Mobi|Android|iPhone|iPad|iPod|Windows Phone|BlackBerry", ua, re.I))
 
 st.set_page_config(
     page_title="Caja ExpoCafé", page_icon="💰", layout="wide",
@@ -753,22 +775,15 @@ with col_cart:
             with col_o:
                 with st.expander("⚙️ Opciones", expanded=opts_activas):
                     es_merma = st.checkbox(
-                        "📉 Merma (descuenta stock, no es venta)",
+                        "📉 Merma",
                         key="es_merma_venta",
                         help="Para productos rotos, derramados o perdidos. Descuenta stock igual que una venta, pero no cuenta como ingreso.",
                     )
                     if not es_merma:
                         quiere_factura = st.checkbox(
-                            "🧾 Requiere factura",
+                            "🧾 Factura",
                             key="factura_venta",
                             help="Entra a Odoo como borrador; la factura se emite a mano al cliente real. El correo pasa a ser obligatorio.",
-                        )
-                        # Correo SIEMPRE disponible (opcional). Si el cliente lo entrega, se guarda y
-                        # llega a las notas del pedido en Odoo. Solo es obligatorio cuando pide factura.
-                        email_factura = st.text_input(
-                            "📧 Correo del cliente" + (" (obligatorio para factura)" if quiere_factura else " (opcional)"),
-                            key="email_factura_venta", placeholder="cliente@empresa.cl",
-                            help="Si el cliente lo da, se registra y llega a las notas del pedido en Odoo. Solo es obligatorio cuando pide factura.",
                         )
                         desc_tipo = st.radio(
                             "Descuento",
@@ -787,6 +802,15 @@ with col_cart:
                     st.caption("Merma — sin método de pago.")
                 else:
                     metodo_pago = st.selectbox("Método de pago", METODOS_PAGO, key="metodo_pago_venta")
+
+        # --- Correo del cliente: SIEMPRE visible (fuera de Opciones), opcional. Se guarda y llega
+        # a las notas del pedido en Odoo. Solo es obligatorio cuando se marca Factura. ---
+        if not es_merma:
+            email_factura = st.text_input(
+                "📧 Correo del cliente" + (" (obligatorio para factura)" if quiere_factura else " (opcional)"),
+                key="email_factura_venta", placeholder="cliente@empresa.cl",
+                help="Si el cliente lo da, se registra y llega a las notas del pedido en Odoo. Solo es obligatorio cuando pide factura.",
+            )
 
         # --- descuento calculado (aplica a la venta completa) ---
         descuento_monto = 0
@@ -874,8 +898,13 @@ with col_cart:
                 refrescar()
                 st.rerun()
 
-        # --- Detalle del carrito: gestión inline (➕ ➖ 🗑️) compacta, colapsada por defecto ---
-        with st.expander(f"📋 Ver / editar carrito ({n_lines} líneas · {int(n_units)} prod.)"):
+        # --- Detalle del carrito: en móvil colapsado (para no empujar el catálogo); en PC visible ---
+        if es_movil():
+            cart_box = st.expander(f"📋 Ver / editar carrito ({n_lines} líneas · {int(n_units)} prod.)")
+        else:
+            st.markdown("**📋 Carrito**")
+            cart_box = st.container()
+        with cart_box:
             with st.container(key="cart_detail_rows"):
                 stock_idx = st.session_state.stock_df.set_index("SKU")
                 for i, item in enumerate(carrito):
