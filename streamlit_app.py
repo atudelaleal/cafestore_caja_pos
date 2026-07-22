@@ -441,6 +441,15 @@ def accion_enviar_ventas(simular=True):
                                    "Pedido/Detalle": f"{name} — sin confirmar, contactar {pl['email']}"})
             else:
                 models.execute_kw(db, uid, key, "sale.order", "action_confirm", [[order_id]], {"context": ctx})
+                # Venta normal CON correo (opcional): se confirma igual, pero se deja el correo en el
+                # chatter para seguimiento/boleta. Sin correo, no se postea nada.
+                if pl["email"]:
+                    try:
+                        models.execute_kw(db, uid, key, "sale.order", "message_post", [[order_id]],
+                                          {"body": f"📧 Correo entregado por el cliente: <b>{pl['email']}</b><br/>"
+                                                   f"Origen: Caja ExpoCafé, Venta_ID <code>{pl['vid']}</code>."})
+                    except Exception:
+                        pass  # el chatter es informativo — que falle no debe voltear el pedido confirmado
                 for rn in pl["rows"]:
                     updates.append({"range": rowcol_to_a1(rn, col_estado), "values": [["OK"]]})
                     updates.append({"range": rowcol_to_a1(rn, col_pedido), "values": [[name]]})
@@ -752,13 +761,15 @@ with col_cart:
                         quiere_factura = st.checkbox(
                             "🧾 Requiere factura",
                             key="factura_venta",
-                            help="Registra el correo para contactar al cliente después. Entra a Odoo como borrador; la factura se emite a mano.",
+                            help="Entra a Odoo como borrador; la factura se emite a mano al cliente real. El correo pasa a ser obligatorio.",
                         )
-                        if quiere_factura:
-                            email_factura = st.text_input(
-                                "Correo del cliente (factura)",
-                                key="email_factura_venta", placeholder="cliente@empresa.cl",
-                            )
+                        # Correo SIEMPRE disponible (opcional). Si el cliente lo entrega, se guarda y
+                        # llega a las notas del pedido en Odoo. Solo es obligatorio cuando pide factura.
+                        email_factura = st.text_input(
+                            "📧 Correo del cliente" + (" (obligatorio para factura)" if quiere_factura else " (opcional)"),
+                            key="email_factura_venta", placeholder="cliente@empresa.cl",
+                            help="Si el cliente lo da, se registra y llega a las notas del pedido en Odoo. Solo es obligatorio cuando pide factura.",
+                        )
                         desc_tipo = st.radio(
                             "Descuento",
                             ["Sin descuento", "Porcentaje (%)", "Monto ($)"],
